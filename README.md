@@ -8,6 +8,18 @@ Single-click the tray icon for a quick popup of today's events, unread mail, and
 
 ---
 
+## Screenshots
+
+| Tray Popup | Calendar |
+|:---:|:---:|
+| ![Popup](_Screenshots/1.png) | ![Calendar](_Screenshots/3.png) |
+
+| Emails | Settings |
+|:---:|:---:|
+| ![Emails](_Screenshots/4.png) | ![Settings](_Screenshots/5.png) |
+
+---
+
 ## Features
 
 - **Calendar** — view, create, edit, and delete Google Calendar events
