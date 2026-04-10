@@ -6,6 +6,7 @@ __pycache__/
 *.pyd
 CLAUDE.md
 _menu.ps1
+_trayPilot.ps1
 toolchain/
 audit.md
 spec/
