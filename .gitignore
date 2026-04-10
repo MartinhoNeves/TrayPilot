@@ -1,0 +1,15 @@
+venv/
+__pycache__/
+.superpowers/
+*.pyc
+*.pyo
+*.pyd
+CLAUDE.md
+_menu.ps1
+toolchain/
+audit.md
+spec/
+Docs/
+build/
+dist/
+*.egg-info/
