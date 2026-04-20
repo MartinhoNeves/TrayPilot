@@ -29,14 +29,18 @@ from __future__ import annotations
 
 import base64
 import email.utils
+import httplib2
 import threading
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
+from google_auth_httplib2 import AuthorizedHttp
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+
+from google_client import GOOGLE_API_HTTP_TIMEOUT_SEC
 
 if TYPE_CHECKING:
     from google_client import GoogleClient
@@ -162,11 +166,11 @@ class GmailClient(QObject):
             return
 
         try:
-            self._service = build(
-                "gmail", "v1",
-                credentials=creds,
-                cache_discovery=False,
+            http = AuthorizedHttp(
+                creds,
+                http=httplib2.Http(timeout=GOOGLE_API_HTTP_TIMEOUT_SEC),
             )
+            self._service = build("gmail", "v1", http=http, cache_discovery=False)
         except Exception:
             return  # Non-fatal — Gmail features won't function
 

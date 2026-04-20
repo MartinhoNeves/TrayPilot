@@ -43,6 +43,11 @@ class Alarm:
     sound: str = SOUND_NONE
     linked_event_id: str = ""
     linked_offset_minutes: int = 0
+    # True when this row mirrors the Calendar form "Notification" (popup) reminder.
+    reminder_sync: bool = False
+    # True when this row fires a Notes-tab reminder (hidden from Alarms UI).
+    note_reminder: bool = False
+    linked_note_id: str = ""
     created_at_iso: str = ""
     updated_at_iso: str = ""
 
@@ -60,6 +65,9 @@ class Alarm:
             "sound": self.sound,
             "linked_event_id": self.linked_event_id,
             "linked_offset_minutes": int(self.linked_offset_minutes),
+            "reminder_sync": bool(self.reminder_sync),
+            "note_reminder": bool(self.note_reminder),
+            "linked_note_id": self.linked_note_id,
             "created_at_iso": self.created_at_iso,
             "updated_at_iso": self.updated_at_iso,
         }
@@ -90,6 +98,9 @@ class Alarm:
 
         linked_event_id = str(payload.get("linked_event_id") or "")
         linked_offset_minutes = int(payload.get("linked_offset_minutes") or 0)
+        reminder_sync = bool(payload.get("reminder_sync", False))
+        note_reminder = bool(payload.get("note_reminder", False))
+        linked_note_id = str(payload.get("linked_note_id") or "")
 
         created_at_iso = str(payload.get("created_at_iso") or now_iso)
         updated_at_iso = str(payload.get("updated_at_iso") or now_iso)
@@ -111,6 +122,9 @@ class Alarm:
             sound=sound,
             linked_event_id=linked_event_id,
             linked_offset_minutes=linked_offset_minutes,
+            reminder_sync=reminder_sync,
+            note_reminder=note_reminder,
+            linked_note_id=linked_note_id,
             created_at_iso=created_at_iso,
             updated_at_iso=updated_at_iso,
         )
@@ -198,6 +212,9 @@ def create_alarm(
     sound: str = SOUND_NONE,
     linked_event_id: str = "",
     linked_offset_minutes: int = 0,
+    reminder_sync: bool = False,
+    note_reminder: bool = False,
+    linked_note_id: str = "",
 ) -> Alarm:
     recurrence = recurrence if recurrence in VALID_RECURRENCE else RECURRENCE_NONE
     sound = sound if sound in VALID_SOUNDS else SOUND_NONE
@@ -210,6 +227,9 @@ def create_alarm(
         sound=sound,
         linked_event_id=linked_event_id,
         linked_offset_minutes=int(linked_offset_minutes),
+        reminder_sync=bool(reminder_sync),
+        note_reminder=bool(note_reminder),
+        linked_note_id=str(linked_note_id or ""),
     )
     return upsert_alarm(alarm)
 
@@ -270,6 +290,105 @@ def recurrence_label(key: str) -> str:
         RECURRENCE_YEARLY: "Yearly",
     }
     return labels.get(key, "Once")
+
+
+def event_dict_start_datetime(event: dict) -> dt.datetime | None:
+    """Parse event start from a Google Calendar event resource."""
+    start = event.get("start") or {}
+    if "dateTime" in start:
+        try:
+            return parse_iso(str(start["dateTime"]))
+        except Exception:
+            return None
+    if "date" in start:
+        try:
+            day = dt.date.fromisoformat(str(start["date"]))
+            return dt.datetime.combine(day, dt.time.min, tzinfo=now_local().tzinfo)
+        except Exception:
+            return None
+    return None
+
+
+def _wants_popup_reminder_minutes(reminders: dict[str, Any] | None) -> tuple[bool, int]:
+    """
+    Local TrayPilot alarms only mirror an explicit popup ("Notification") reminder.
+    Default / email-only / none are not translated (Google handles those server-side).
+    """
+    if not reminders or not isinstance(reminders, dict):
+        return False, 0
+    if reminders.get("useDefault"):
+        return False, 0
+    overrides = reminders.get("overrides") or []
+    if not overrides or not isinstance(overrides, list):
+        return False, 0
+    first = overrides[0]
+    if not isinstance(first, dict):
+        return False, 0
+    if str(first.get("method") or "") != "popup":
+        return False, 0
+    return True, max(0, int(first.get("minutes") or 0))
+
+
+def delete_reminder_sync_alarms_for_event(event_id: str) -> bool:
+    """Remove calendar-reminder mirror alarms for this Google event id. Returns True if any were removed."""
+    eid = str(event_id or "")
+    if not eid:
+        return False
+    alarms = load_alarms()
+    kept = [a for a in alarms if not (a.reminder_sync and a.linked_event_id == eid)]
+    if len(kept) == len(alarms):
+        return False
+    save_alarms(kept)
+    return True
+
+
+def user_visible_alarms(alarms: list[Alarm]) -> list[Alarm]:
+    """Omit hidden schedule rows from user-facing lists (they still run in the scheduler)."""
+    return [a for a in alarms if not a.reminder_sync and not a.note_reminder]
+
+
+def sync_reminder_alarm_from_calendar_event(
+    *, google_event: dict, reminders: dict[str, Any] | None
+) -> None:
+    """
+    Ensure a local Alarm exists (or is removed) so Notification reminders play
+    alarm sound via AlarmScheduler at (event start − minutes).
+    """
+    gid = str(google_event.get("id") or "")
+    if not gid:
+        return
+    want, minutes = _wants_popup_reminder_minutes(reminders)
+    if not want:
+        delete_reminder_sync_alarms_for_event(gid)
+        return
+    start = event_dict_start_datetime(google_event)
+    if start is None:
+        delete_reminder_sync_alarms_for_event(gid)
+        return
+    title = str(google_event.get("summary") or "").strip() or "Event"
+    fire_at = start - dt.timedelta(minutes=minutes)
+    existing = next(
+        (a for a in load_alarms() if a.reminder_sync and a.linked_event_id == gid),
+        None,
+    )
+    if existing:
+        existing.title = title
+        existing.linked_offset_minutes = minutes
+        existing.enabled = True
+        existing.next_fire_iso = fire_at.isoformat()
+        existing.reminder_sync = True
+        existing.sound = SOUND_NONE
+        upsert_alarm(existing)
+        return
+    create_alarm(
+        title=title,
+        next_fire=fire_at,
+        recurrence=RECURRENCE_NONE,
+        sound=SOUND_NONE,
+        linked_event_id=gid,
+        linked_offset_minutes=minutes,
+        reminder_sync=True,
+    )
 
 
 def recalculate_linked_alarms(alarms: list[Alarm], events: list[dict]) -> list[Alarm]:

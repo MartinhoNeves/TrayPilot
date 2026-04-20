@@ -1,14 +1,15 @@
 """
-alarm_notification.py — alarm popup dialog with dismiss/snooze controls.
+note_notification.py — read-only note reminder dialog (Dismiss / Snooze / Edit note).
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QHBoxLayout,
     QLabel,
+    QPlainTextEdit,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -20,21 +21,27 @@ from colour_theme import c
 from settings import get_default_snooze_minutes
 
 
-class AlarmNotificationDialog(QDialog):
+class NoteReminderDialog(QDialog):
+    edit_note_requested = pyqtSignal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._alarm_id: str | None = None
-        self.setWindowTitle("Alarm")
+        self._note_id: str | None = None
+        self.setWindowTitle("Note reminder")
         self.setModal(False)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         self.setWindowFlag(Qt.WindowType.Tool, True)
-        self.setMinimumWidth(340)
+        self.setMinimumWidth(380)
+        self.setMinimumHeight(220)
         self._build_ui()
         self._apply_theme()
 
-    def present(self, alarm: Alarm) -> None:
+    def present(self, alarm: Alarm, *, title: str, body: str, note_id: str) -> None:
         self._alarm_id = alarm.id
-        self._title_lbl.setText(alarm.title or "Alarm")
+        self._note_id = note_id
+        self._title_lbl.setText(title.strip() or "Note")
+        self._body.setPlainText(body)
         self._detail_lbl.setText(f"Scheduled: {alarm.next_fire.strftime('%Y-%m-%d %H:%M')}")
         dm = get_default_snooze_minutes()
         idx_map = {5: 0, 10: 1, 15: 2, 30: 3}
@@ -45,8 +52,7 @@ class AlarmNotificationDialog(QDialog):
         self.show()
         self.raise_()
         self.activateWindow()
-        # activateWindow() often focuses the first focusable widget (the combo). On Windows
-        # that can leave the snooze dropdown visibly open; close it and focus Snooze instead.
+
         def _after_show():
             self._snooze_combo.hidePopup()
             self.snooze_btn.setFocus(Qt.FocusReason.OtherFocusReason)
@@ -55,6 +61,9 @@ class AlarmNotificationDialog(QDialog):
 
     def current_alarm_id(self) -> str | None:
         return self._alarm_id
+
+    def current_note_id(self) -> str | None:
+        return self._note_id
 
     def selected_snooze_minutes(self) -> int:
         value = str(self._snooze_combo.currentData())
@@ -67,13 +76,19 @@ class AlarmNotificationDialog(QDialog):
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
 
-        self._title_lbl = QLabel("Alarm")
-        self._title_lbl.setObjectName("alarmTitle")
+        self._title_lbl = QLabel("Note")
+        self._title_lbl.setObjectName("noteReminderTitle")
         root.addWidget(self._title_lbl)
 
         self._detail_lbl = QLabel("")
-        self._detail_lbl.setObjectName("alarmDetail")
+        self._detail_lbl.setObjectName("noteReminderDetail")
         root.addWidget(self._detail_lbl)
+
+        self._body = QPlainTextEdit()
+        self._body.setReadOnly(True)
+        self._body.setObjectName("noteReminderBody")
+        self._body.setMinimumHeight(120)
+        root.addWidget(self._body, 1)
 
         row = QWidget()
         row_layout = QHBoxLayout(row)
@@ -100,11 +115,21 @@ class AlarmNotificationDialog(QDialog):
 
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
+        self.edit_btn = QPushButton("Edit note")
         self.dismiss_btn = QPushButton("Dismiss")
         self.snooze_btn = QPushButton("Snooze")
+        buttons.addWidget(self.edit_btn)
         buttons.addWidget(self.dismiss_btn)
         buttons.addWidget(self.snooze_btn)
         root.addLayout(buttons)
+
+        self.edit_btn.clicked.connect(self._on_edit_clicked)
+
+    def _on_edit_clicked(self):
+        nid = self._note_id or ""
+        self.hide()
+        if nid:
+            self.edit_note_requested.emit(nid)
 
     def _on_snooze_changed(self):
         self._custom_minutes.setVisible(str(self._snooze_combo.currentData()) == "custom")
@@ -118,14 +143,22 @@ class AlarmNotificationDialog(QDialog):
                 border: 1px solid {c("border")};
                 border-radius: 8px;
             }}
-            QLabel#alarmTitle {{
+            QLabel#noteReminderTitle {{
                 color: {c("accent")};
                 font-size: 14px;
                 font-weight: 600;
             }}
-            QLabel#alarmDetail {{
+            QLabel#noteReminderDetail {{
                 color: {c("dim")};
                 font-size: 11px;
+            }}
+            QPlainTextEdit#noteReminderBody {{
+                background: {c("bg")};
+                color: {c("text")};
+                border: 1px solid {c("action_btn_border")};
+                border-radius: 4px;
+                padding: 8px;
+                font-size: 12px;
             }}
             QComboBox, QSpinBox {{
                 background: {c("bg")};
@@ -140,17 +173,23 @@ class AlarmNotificationDialog(QDialog):
                 padding: 6px 10px;
                 font-size: 11px;
             }}
-            QPushButton#dismissBtn {{
+            QPushButton#noteDismissBtn {{
                 background: transparent;
                 color: {c("dim")};
                 border: 1px solid {c("action_btn_border")};
             }}
-            QPushButton#snoozeBtn {{
+            QPushButton#noteSnoozeBtn {{
                 background: {c("agenda_btn_bg")};
                 color: {c("accent")};
                 border: 1px solid {c("agenda_btn_border")};
             }}
+            QPushButton#noteEditBtn {{
+                background: {c("titlebar")};
+                color: {c("text")};
+                border: 1px solid {c("action_btn_border")};
+            }}
             """
         )
-        self.dismiss_btn.setObjectName("dismissBtn")
-        self.snooze_btn.setObjectName("snoozeBtn")
+        self.dismiss_btn.setObjectName("noteDismissBtn")
+        self.snooze_btn.setObjectName("noteSnoozeBtn")
+        self.edit_btn.setObjectName("noteEditBtn")

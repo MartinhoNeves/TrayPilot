@@ -39,6 +39,17 @@ class Paths:
     def alarms_json(cls) -> Path:
         return cls.data_dir() / "alarms.json"
 
+    @classmethod
+    def notes_json(cls) -> Path:
+        return cls.data_dir() / "notes.json"
+
+    @classmethod
+    def note_attachments_dir(cls, note_id: str) -> Path:
+        """Per-note folder for pasted/attached images (under AppData)."""
+        d = cls.data_dir() / "note_attachments" / str(note_id)
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
     # ── Static assets ──────────────────────────────────────────────────────────
 
     @classmethod

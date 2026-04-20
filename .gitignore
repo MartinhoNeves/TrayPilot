@@ -1,6 +1,7 @@
 venv/
 __pycache__/
 .superpowers/
+Assets/installation/
 *.pyc
 *.pyo
 *.pyd
@@ -14,3 +15,7 @@ Docs/
 build/
 dist/
 *.egg-info/
+credentials.json
+Todo.md
+_git_instructions.md
+version.md

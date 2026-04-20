@@ -101,8 +101,14 @@ class AlarmFormPanel(QWidget):
             self._open_width = max(FORM_WIDTH, int(width))
         self._editing_alarm_id = alarm.id
         self._title.setText(alarm.title)
-        self._date.setDate(alarm.next_fire.date())
-        self._time.setTime(QTime(alarm.next_fire.hour, alarm.next_fire.minute))
+        if alarm.linked_event_id:
+            self._date.setDate(alarm.next_fire.date())
+            self._time.setTime(QTime(alarm.next_fire.hour, alarm.next_fire.minute))
+        else:
+            # Standalone: Date/Time is the reference anchor; fire time is anchor − offset.
+            anchor = alarm.next_fire + dt.timedelta(minutes=int(alarm.linked_offset_minutes))
+            self._date.setDate(anchor.date())
+            self._time.setTime(QTime(anchor.hour, anchor.minute))
         self._set_combo_data(self._recurrence, alarm.recurrence)
         self._set_combo_data(self._sound, alarm.sound)
         self._set_combo_data(self._event_combo, alarm.linked_event_id)
@@ -307,16 +313,21 @@ class AlarmFormPanel(QWidget):
         selected_date = self._date.date().toPyDate()
         selected_time = self._time.time().toPyTime()
         when = dt.datetime.combine(selected_date, selected_time, tzinfo=dt.datetime.now().astimezone().tzinfo)
-        if self._editing_alarm_id is None and when <= dt.datetime.now().astimezone():
+        offset_min = int(self._offset.value())
+        linked = str(self._event_combo.currentData() or "")
+        # Calendar-linked: next_fire is recomputed from the event start; keep form time as initial value.
+        # Standalone: Date/Time is when you care about the event; ring offset_min minutes before that moment.
+        fire_at = when if linked else when - dt.timedelta(minutes=offset_min)
+        if self._editing_alarm_id is None and fire_at <= dt.datetime.now().astimezone():
             QMessageBox.warning(self, "Invalid date", "Alarm must be scheduled in the future.")
             return
         payload = {
             "title": title,
-            "next_fire_iso": when.isoformat(),
+            "next_fire_iso": fire_at.isoformat(),
             "recurrence": str(self._recurrence.currentData()),
             "sound": str(self._sound.currentData()),
-            "linked_event_id": str(self._event_combo.currentData() or ""),
-            "linked_offset_minutes": int(self._offset.value()),
+            "linked_event_id": linked,
+            "linked_offset_minutes": offset_min,
         }
         self._error.setText("")
         self.submit_requested.emit(self._editing_alarm_id, payload)

@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
 from widget_email_row import EmailRow
 
 from colour_theme import c
-from alarms import Alarm, list_alarms
+from alarms import Alarm, list_alarms, user_visible_alarms
 from google_client import (
     GoogleClient, event_color, event_start_date, event_start_display, is_urgent,
 )
@@ -51,7 +51,7 @@ class _PopupFetchWorker(QObject):
         self._view_date = view_date
 
     def run(self):
-        active_alarms = [a for a in list_alarms() if a.enabled][:5]
+        active_alarms = [a for a in user_visible_alarms(list_alarms()) if a.enabled][:5]
         if not self._client.is_ready:
             self.finished.emit(
                 {

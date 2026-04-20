@@ -30,13 +30,30 @@ from typing import Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
+import httplib2
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
+from google_auth_httplib2 import AuthorizedHttp
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from paths import Paths
+
+# Discovery + API calls use httplib2; token refresh uses requests — both need bounds
+# so a flaky network cannot stall the background auth thread forever.
+GOOGLE_API_HTTP_TIMEOUT_SEC = 60
+
+
+class _TimeoutRequest(Request):
+    """google.auth Request wrapper that always applies a socket read timeout."""
+
+    def __call__(self, url, method="GET", body=None, headers=None, timeout=None, **kwargs):
+        if timeout is None:
+            timeout = GOOGLE_API_HTTP_TIMEOUT_SEC
+        return super().__call__(
+            url, method=method, body=body, headers=headers, timeout=timeout, **kwargs
+        )
 
 
 # Calendar read + write scopes; Gmail read-only for M11 mail awareness
@@ -97,19 +114,28 @@ class GoogleClient(QObject):
         Call this once at startup (or whenever auth_required fires).
         """
         creds = self._load_token()
+        timeout_req = _TimeoutRequest()
 
         if creds and creds.valid:
             self._creds = creds
-            self._build_service()
-            return True
+            try:
+                self._build_service()
+                return True
+            except Exception as exc:
+                self.error.emit(f"Could not initialize Google Calendar client: {exc}")
+                return False
 
         if creds and creds.expired and creds.refresh_token:
             try:
-                creds.refresh(Request())
+                creds.refresh(timeout_req)
                 self._save_token(creds)
                 self._creds = creds
-                self._build_service()
-                return True
+                try:
+                    self._build_service()
+                    return True
+                except Exception as exc:
+                    self.error.emit(f"Could not initialize Google Calendar client: {exc}")
+                    return False
             except Exception:
                 # Token is dead — fall through to browser flow
                 pass
@@ -321,8 +347,14 @@ class GoogleClient(QObject):
         _threading.Thread(target=self.run_auth_flow, daemon=True).start()
 
     def _build_service(self):
-        # cache_discovery=False avoids temp-file caching issues in frozen builds
-        self._service = build("calendar", "v3", credentials=self._creds, cache_discovery=False)
+        # cache_discovery=False avoids temp-file caching issues in frozen builds.
+        # AuthorizedHttp + httplib2 timeout bounds discovery + all Calendar.execute() calls.
+        assert self._creds is not None
+        http = AuthorizedHttp(
+            self._creds,
+            http=httplib2.Http(timeout=GOOGLE_API_HTTP_TIMEOUT_SEC),
+        )
+        self._service = build("calendar", "v3", http=http, cache_discovery=False)
         self.ready.emit()
 
     def _load_token(self) -> Optional[Credentials]:

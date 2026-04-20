@@ -14,7 +14,7 @@ from paths import Paths
 from settings import get_theme_mode
 
 # Display / About tab — bump when you ship a release (also update changelog in version.md if you keep it).
-APP_VERSION = "1.2"
+APP_VERSION = "1.3"
 
 def main():
     app = QApplication(sys.argv)

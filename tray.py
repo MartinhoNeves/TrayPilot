@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from alarm_notification import AlarmNotificationDialog
 from alarm_scheduler import AlarmScheduler
 from alarms import SOUND_ALARM, SOUND_EMAIL
+from note_notification import NoteReminderDialog
 from google_client import GoogleClient
 from paths import Paths
 from popup import PopupFlyout
@@ -49,6 +50,10 @@ class TrayIcon(QObject):
         self._alarm_dialog = AlarmNotificationDialog()
         self._alarm_dialog.dismiss_btn.clicked.connect(self._on_alarm_dismiss)
         self._alarm_dialog.snooze_btn.clicked.connect(self._on_alarm_snooze)
+        self._note_dialog = NoteReminderDialog()
+        self._note_dialog.dismiss_btn.clicked.connect(self._on_note_reminder_dismiss)
+        self._note_dialog.snooze_btn.clicked.connect(self._on_note_reminder_snooze)
+        self._note_dialog.edit_note_requested.connect(self._on_note_edit_requested)
         self._audio_output = QAudioOutput(self)
         self._player = QMediaPlayer(self)
         self._player.setAudioOutput(self._audio_output)
@@ -71,7 +76,7 @@ class TrayIcon(QObject):
     def _build_menu(self):
         menu = QMenu()
 
-        for tab_name in ("Calendar", "Emails", "Alarms", "Settings", "About"):
+        for tab_name in ("Calendar", "Emails", "Alarms", "Notes", "Settings", "About"):
             tab_action = QAction(tab_name, self)
             tab_action.triggered.connect(
                 lambda _checked=False, t=tab_name.lower(): self._open_window_tab(t)
@@ -127,6 +132,7 @@ class TrayIcon(QObject):
     def _on_theme_changed(self):
         self._popup.apply_theme()
         self._alarm_dialog._apply_theme()
+        self._note_dialog._apply_theme()
         if self._popup.isVisible():
             self._popup.refresh()
 
@@ -171,7 +177,29 @@ class TrayIcon(QObject):
             self._icon.setToolTip(f"TrayPilot — {count} unread {noun}")
 
     def _on_alarm_fired(self, alarm):
+        from notes import get_note
         from settings import get_notify_balloon_alarm
+
+        if getattr(alarm, "note_reminder", False) and getattr(alarm, "linked_note_id", ""):
+            note = get_note(alarm.linked_note_id)
+            title = (note.title if note else None) or alarm.title or "Note"
+            body = note.body if note else ""
+            if get_notify_balloon_alarm():
+                self._icon.showMessage(
+                    "Note reminder",
+                    title,
+                    QSystemTrayIcon.MessageIcon.Information,
+                    8000,
+                )
+            sound = getattr(alarm, "sound", "") or get_alarm_sound_default() or SOUND_ALARM
+            self._play_alarm_sound(sound)
+            self._note_dialog.present(
+                alarm,
+                title=title,
+                body=body,
+                note_id=alarm.linked_note_id,
+            )
+            return
 
         if get_notify_balloon_alarm():
             self._icon.showMessage(
@@ -195,6 +223,31 @@ class TrayIcon(QObject):
         if alarm_id:
             self._alarm_scheduler.snooze(alarm_id, self._alarm_dialog.selected_snooze_minutes())
         self._alarm_dialog.hide()
+
+    def _on_note_reminder_dismiss(self):
+        from notes import clear_note_reminder_schedule
+
+        note_id = self._note_dialog.current_note_id()
+        if note_id:
+            clear_note_reminder_schedule(note_id)
+        self._note_dialog.hide()
+        self._alarm_scheduler.refresh()
+
+    def _on_note_reminder_snooze(self):
+        from notes import patch_note_reminder_after_snooze
+
+        note_id = self._note_dialog.current_note_id()
+        alarm_id = self._note_dialog.current_alarm_id()
+        if note_id and alarm_id:
+            self._alarm_scheduler.snooze(alarm_id, self._note_dialog.selected_snooze_minutes())
+            patch_note_reminder_after_snooze(note_id, alarm_id)
+        self._note_dialog.hide()
+        self._alarm_scheduler.refresh()
+
+    def _on_note_edit_requested(self, note_id: str):
+        self._open_window()
+        if self._window is not None:
+            self._window.open_tab("notes", note_id=note_id or None)
 
     def _on_alarms_changed(self):
         if self._window is not None and self._window.isVisible():

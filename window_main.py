@@ -18,10 +18,13 @@ from alarm_scheduler import AlarmScheduler
 from alarms import (
     Alarm,
     RECURRENCE_NONE,
+    user_visible_alarms,
     create_alarm,
     delete_alarm,
+    delete_reminder_sync_alarms_for_event,
     list_alarms,
     recalculate_linked_alarms,
+    sync_reminder_alarm_from_calendar_event,
     upsert_alarm,
 )
 from colour_theme import c
@@ -35,6 +38,7 @@ from widget_calendar import CalendarWidget
 from widget_email_stub import EmailStubWidget
 from widget_event_list import EventListWidget
 from widget_about import AboutTabWidget
+from widget_notes import NotesWidget
 from widget_settings import SettingsWidget
 
 if TYPE_CHECKING:
@@ -85,6 +89,7 @@ class MainWindow(QMainWindow):
         self._calendar_tab_index = 0
         self._emails_tab_index = 1
         self._alarms_tab_index = 2  # Calendar=0, Emails=1, Alarms=2
+        self._notes_tab_index = -1
         self._settings_tab_index = -1
         self._about_tab_index = -1
         self._snapping_calendar = False
@@ -121,6 +126,16 @@ class MainWindow(QMainWindow):
         # the API service; refetch as soon as the client becomes ready.
         self._client.ready.connect(self._on_google_service_ready)
 
+    def _on_google_service_ready(self):
+        # ready is emitted from a plain threading.Thread, so route UI updates
+        # through the main thread (same pattern as refresh below).
+        QTimer.singleShot(0, self, self._after_google_ready_on_gui_thread)
+
+    def _after_google_ready_on_gui_thread(self):
+        self._set_status_connected(connected=self._client.is_ready)
+        if self.isVisible():
+            self.refresh()
+
     # ── Public ────────────────────────────────────────────────────────────────
 
     def showEvent(self, event):
@@ -138,9 +153,9 @@ class MainWindow(QMainWindow):
 
     def refresh_alarms(self):
         alarms = self._load_alarms_with_links()
-        self._alarm_list.set_alarms(alarms)
+        self._alarm_list.set_alarms(user_visible_alarms(alarms))
 
-    def open_tab(self, tab_name: str):
+    def open_tab(self, tab_name: str, note_id: str | None = None):
         if self._tabs is None:
             return
         key = tab_name.strip().lower()
@@ -150,24 +165,21 @@ class MainWindow(QMainWindow):
             "email": self._emails_tab_index,
             "alarms": self._alarms_tab_index,
             "alarm": self._alarms_tab_index,
+            "notes": self._notes_tab_index,
+            "note": self._notes_tab_index,
             "settings": self._settings_tab_index,
             "about": self._about_tab_index,
         }
         idx = tab_map.get(key)
         if idx is not None and idx >= 0:
             self._tabs.setCurrentIndex(idx)
+            if key in ("notes", "note") and note_id:
+                QTimer.singleShot(0, lambda nid=str(note_id): self._notes_widget.focus_note(nid))
 
     def _load_alarms_fast(self):
         """Load alarm list from disk without a network call. Used on first show."""
         alarms = list_alarms()
-        self._alarm_list.set_alarms(alarms)
-
-    def _on_google_service_ready(self):
-        # ready is emitted from a plain threading.Thread, so PyQt6 treats it as
-        # DirectConnection (not QueuedConnection). Post the refresh to the main
-        # event loop via context=self so Qt routes it to the GUI thread.
-        if self.isVisible():
-            QTimer.singleShot(0, self, self.refresh)
+        self._alarm_list.set_alarms(user_visible_alarms(alarms))
 
     # ── UI construction ───────────────────────────────────────────────────────
 
@@ -233,6 +245,9 @@ class MainWindow(QMainWindow):
         alarms_layout.addWidget(self._alarm_list, 1)
         alarms_layout.addWidget(self._alarm_form)
         self._alarms_tab_index = tabs.addTab(alarms_page, "⏰  Alarms")
+
+        self._notes_widget = NotesWidget(self._alarm_scheduler)
+        self._notes_tab_index = tabs.addTab(self._notes_widget, "📝  Notes")
 
         self._settings_widget = SettingsWidget(self._gmail)
         self._settings_widget.appearance_changed.connect(self._on_settings_appearance)
@@ -510,16 +525,18 @@ class MainWindow(QMainWindow):
                     self._last_client_error or "Could not delete event.",
                 )
                 return
+            delete_reminder_sync_alarms_for_event(str(event_id))
+            self._alarm_scheduler.refresh()
             self.refresh()
             return
 
         action = self._ask_recurring_delete_scope(title)
         if action == "cancel":
             return
+        series_id = str(event.get("recurringEventId") or "")
         if action == "this":
             deleted = self._client.delete_event(event_id)
         elif action == "all":
-            series_id = str(event.get("recurringEventId") or "")
             deleted = self._client.delete_event(series_id) if series_id else False
         else:  # this_and_following
             deleted = self._delete_this_and_following(event)
@@ -531,19 +548,30 @@ class MainWindow(QMainWindow):
                 self._last_client_error or "Could not delete event.",
             )
             return
+        if action == "all" and series_id:
+            delete_reminder_sync_alarms_for_event(series_id)
+        elif action == "this":
+            delete_reminder_sync_alarms_for_event(str(event_id))
+        self._alarm_scheduler.refresh()
         self.refresh()
 
     def _on_form_submit(self, event_id, payload: dict):
         if event_id:
-            ok = self._client.update_event(event_id, payload)
-            if ok is None:
+            result = self._client.update_event(event_id, payload)
+            if result is None:
                 self._event_form.show_error(self._last_client_error or "Could not update event.")
                 return
         else:
-            ok = self._client.create_event(payload)
-            if ok is None:
+            result = self._client.create_event(payload)
+            if result is None:
                 self._event_form.show_error(self._last_client_error or "Could not create event.")
                 return
+
+        sync_reminder_alarm_from_calendar_event(
+            google_event=result,
+            reminders=payload.get("reminders"),
+        )
+        self._alarm_scheduler.refresh()
 
         self._event_form.close_panel()
         self.refresh()
@@ -636,6 +664,8 @@ class MainWindow(QMainWindow):
     def _on_tab_changed(self, index: int):
         if index == self._alarms_tab_index:
             self.refresh_alarms()
+        elif index == self._notes_tab_index:
+            self._notes_widget.rebuild()
         elif index == self._settings_tab_index:
             self._settings_widget.on_tab_activated()
         elif index == self._about_tab_index:
@@ -741,6 +771,7 @@ class MainWindow(QMainWindow):
         self._alarm_list.apply_theme()
         self._alarm_form.apply_theme()
         self._email_stub.apply_theme()
+        self._notes_widget.apply_theme()
         self.refresh()
         self._set_status_connected(connected=self._client.is_ready)
         if callable(self._on_theme_changed):

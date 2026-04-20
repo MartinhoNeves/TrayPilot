@@ -1,13 +1,14 @@
 """
-widget_settings.py — Settings tab: appearance (incl. launch at startup), Gmail, alarms, notifications.
+widget_settings.py — Settings tab: appearance (incl. launch at startup), Gmail, alarms,
+notifications, and notes data file path (open folder).
 Mail poll interval uses the same ▲/▼ QToolButton pattern as `panel_event_form.EventFormPanel`.
 """
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QIcon
+from PyQt6.QtCore import QSize, Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices, QIcon
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QCheckBox,
@@ -16,6 +17,8 @@ from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
     QSpinBox,
@@ -256,6 +259,36 @@ class SettingsWidget(QWidget):
         notif_row.addStretch(1)
         root.addLayout(notif_row)
 
+        sep4 = QFrame()
+        sep4.setFrameShape(QFrame.Shape.HLine)
+        sep4.setObjectName("settingsSep")
+        root.addWidget(sep4)
+
+        # ── Notes (data file location) ───────────────────────────────────────
+        root.addWidget(self._section_title("Notes"))
+
+        notes_row = QHBoxLayout()
+        notes_row.setContentsMargins(0, 0, 0, 8)
+        notes_row.setSpacing(10)
+        notes_row.addWidget(self._field_label("Notes file"))
+        self._notes_path_edit = QLineEdit()
+        self._notes_path_edit.setObjectName("settingsNotesPathEdit")
+        self._notes_path_edit.setReadOnly(True)
+        self._notes_path_edit.setText(str(Paths.notes_json().resolve()))
+        self._notes_path_edit.setCursor(Qt.CursorShape.IBeamCursor)
+        self._notes_path_edit.setMinimumWidth(280)
+        self._notes_path_edit.setToolTip(
+            "Notes text and metadata are in this JSON file. Images are stored under "
+            "the note_attachments subfolder next to it (one folder per note id)."
+        )
+        notes_row.addWidget(self._notes_path_edit, 1)
+        self._notes_open_folder_btn = QPushButton("Open folder")
+        self._notes_open_folder_btn.setObjectName("settingsNotesOpenFolderBtn")
+        self._notes_open_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._notes_open_folder_btn.clicked.connect(self._on_open_notes_folder)
+        notes_row.addWidget(self._notes_open_folder_btn)
+        root.addLayout(notes_row)
+
         root.addStretch()
         scroll.setWidget(panel)
         outer.addWidget(scroll)
@@ -311,6 +344,11 @@ class SettingsWidget(QWidget):
         self._startup_chk.blockSignals(True)
         self._startup_chk.setChecked(is_run_at_startup_enabled())
         self._startup_chk.blockSignals(False)
+        self._notes_path_edit.setText(str(Paths.notes_json().resolve()))
+
+    def _on_open_notes_folder(self) -> None:
+        folder = Paths.notes_json().parent.resolve()
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def _on_theme_clicked(self):
         toggle_theme_mode()
@@ -467,6 +505,27 @@ class SettingsWidget(QWidget):
             QCheckBox#settingsNotifyChk, QCheckBox#settingsStartupChk {{
                 color: {c("text")};
                 font-size: 12px;
+            }}
+            QLineEdit#settingsNotesPathEdit {{
+                background: {c("titlebar")};
+                color: {c("text")};
+                border: 1px solid {c("action_btn_border")};
+                border-radius: 4px;
+                padding: 6px 8px;
+                font-size: 11px;
+                selection-background-color: {c("accent")};
+            }}
+            QPushButton#settingsNotesOpenFolderBtn {{
+                background: {c("titlebar")};
+                color: {c("text")};
+                border: 1px solid {c("action_btn_border")};
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-size: 11px;
+            }}
+            QPushButton#settingsNotesOpenFolderBtn:hover {{
+                border-color: {c("action_btn_border_hover")};
+                background: {c("calendar_tool_hover_bg")};
             }}
             """
         )
